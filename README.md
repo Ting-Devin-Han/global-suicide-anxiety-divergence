@@ -2,8 +2,6 @@
 
 Core reproducibility code for the cross-national study of divergent suicide mortality and anxiety-disorder burden, 2000–2030.
 
-## English
-
 ### Scope
 
 This repository contains the core data-processing and statistical-analysis code used in the manuscript.
