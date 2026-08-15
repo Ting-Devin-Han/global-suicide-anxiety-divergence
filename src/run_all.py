@@ -26,6 +26,7 @@ def main():
     for script in [
         "validate_panel.py",
         "observed_trends.py",
+        "bayesian_rank_concordance.py",
         "burden_rankings.py",
         "long_term_contextual_models.py",
         "within_country_models.py",
@@ -45,4 +46,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

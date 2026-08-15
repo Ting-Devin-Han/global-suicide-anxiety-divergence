@@ -15,6 +15,7 @@ from common import ENTITY, OUTCOMES, PREDICTORS, TIME, ensure_output_dir, load_p
 RANDOM_SEED = 20260723
 BACKTEST_CUTOFFS = [2009, 2014, 2016]
 FINAL_YEAR = 2030
+OUTCOME_SEED_OFFSETS = {label: index * 1000 for index, label in enumerate(OUTCOMES)}
 
 
 @dataclass
@@ -183,7 +184,7 @@ def fit_outcome_model(panel, label, outcome, cutoff, device, estimators):
     features, target, early = training_matrix(panel, label, outcome, cutoff)
     model = TabPFNRegressor(
         n_estimators=estimators,
-        random_state=RANDOM_SEED + cutoff + (0 if label == "Suicide" else 1000),
+        random_state=RANDOM_SEED + cutoff + OUTCOME_SEED_OFFSETS[label],
         device=device,
         ignore_pretraining_limits=True,
         fit_mode="fit_preprocessors",
@@ -349,4 +350,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

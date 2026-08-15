@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import linregress, spearmanr
 
-from common import ENTITY, OUTCOMES, TIME, ensure_output_dir, load_panel
+from common import ENTITY, NONFATAL_OUTCOMES, OUTCOMES, TIME, ensure_output_dir, load_panel, zscore
 
 
 def slope(values, years):
@@ -79,28 +79,48 @@ def annual_summary(panel):
 def long_term_profiles(panel, trends):
     country = panel.groupby([ENTITY, "country_name", "continent"], as_index=False)[list(OUTCOMES.values())].mean()
     country = country.rename(columns={value: f"{label.lower()}_mean" for label, value in OUTCOMES.items()})
-    trend_wide = trends.pivot(index=ENTITY, columns="outcome", values="linear_slope").reset_index()
-    trend_wide = trend_wide.rename(columns={"Suicide": "suicide_slope", "Anxiety": "anxiety_slope"})
-    result = country.merge(trend_wide, on=ENTITY, how="left")
-    suicide_median = result["suicide_mean"].median()
-    anxiety_median = result["anxiety_mean"].median()
+    linear = trends.pivot(index=ENTITY, columns="outcome", values="linear_slope").rename(
+        columns={label: f"{label.lower()}_slope" for label in OUTCOMES}
+    )
+    annualized = trends.pivot(index=ENTITY, columns="outcome", values="annualized_log_change_percent").rename(
+        columns={label: f"{label.lower()}_annualized_log_change" for label in OUTCOMES}
+    )
+    relative = trends.pivot(index=ENTITY, columns="outcome", values="relative_change_percent").rename(
+        columns={label: f"{label.lower()}_relative_change" for label in OUTCOMES}
+    )
+    result = country.merge(linear.reset_index(), on=ENTITY, how="left").merge(
+        annualized.reset_index(), on=ENTITY, how="left"
+    ).merge(relative.reset_index(), on=ENTITY, how="left")
+    for label in OUTCOMES:
+        result[f"{label.lower()}_level_z"] = zscore(result[f"{label.lower()}_mean"])
+    result["nonfatal_long_term_score"] = result[
+        [f"{label.lower()}_level_z" for label in NONFATAL_OUTCOMES]
+    ].mean(axis=1)
+    result["nonfatal_annualized_log_change"] = result[
+        [f"{label.lower()}_annualized_log_change" for label in NONFATAL_OUTCOMES]
+    ].mean(axis=1)
+    result["nonfatal_relative_change"] = result[
+        [f"{label.lower()}_relative_change" for label in NONFATAL_OUTCOMES]
+    ].mean(axis=1)
+    fatal_cut = result["suicide_level_z"].median()
+    nonfatal_cut = result["nonfatal_long_term_score"].median()
     result["level_profile"] = np.select(
         [
-            (result["suicide_mean"] >= suicide_median) & (result["anxiety_mean"] >= anxiety_median),
-            (result["suicide_mean"] >= suicide_median) & (result["anxiety_mean"] < anxiety_median),
-            (result["suicide_mean"] < suicide_median) & (result["anxiety_mean"] >= anxiety_median),
+            (result["suicide_level_z"] < fatal_cut) & (result["nonfatal_long_term_score"] < nonfatal_cut),
+            (result["suicide_level_z"] >= fatal_cut) & (result["nonfatal_long_term_score"] < nonfatal_cut),
+            (result["suicide_level_z"] < fatal_cut) & (result["nonfatal_long_term_score"] >= nonfatal_cut),
         ],
-        ["High suicide and high anxiety", "High suicide only", "High anxiety only"],
-        default="Low suicide and low anxiety",
+        ["Low fatal and low non-fatal", "High fatal and low non-fatal", "Low fatal and high non-fatal"],
+        default="High fatal and high non-fatal",
     )
     result["change_profile"] = np.select(
         [
-            (result["suicide_slope"] >= 0) & (result["anxiety_slope"] >= 0),
-            (result["suicide_slope"] >= 0) & (result["anxiety_slope"] < 0),
-            (result["suicide_slope"] < 0) & (result["anxiety_slope"] >= 0),
+            (result["suicide_relative_change"] < 0) & (result["nonfatal_relative_change"] > 0),
+            (result["suicide_relative_change"] > 0) & (result["nonfatal_relative_change"] > 0),
+            (result["suicide_relative_change"] < 0) & (result["nonfatal_relative_change"] < 0),
         ],
-        ["Both increasing", "Suicide increasing and anxiety decreasing", "Suicide decreasing and anxiety increasing"],
-        default="Both decreasing",
+        ["Fatal down and non-fatal up", "Both increasing", "Both decreasing"],
+        default="Fatal up and non-fatal down",
     )
     return result
 
@@ -108,8 +128,22 @@ def long_term_profiles(panel, trends):
 def observed_summary(panel, trends, profiles):
     records = []
     slope_matrix = trends.pivot(index=ENTITY, columns="outcome", values="linear_slope")
-    level_correlation = spearmanr(profiles["suicide_mean"], profiles["anxiety_mean"])
-    slope_correlation = spearmanr(slope_matrix["Suicide"], slope_matrix["Anxiety"])
+    correlations = []
+    labels = list(OUTCOMES)
+    for left_index, left in enumerate(labels):
+        for right in labels[left_index + 1:]:
+            level = spearmanr(profiles[f"{left.lower()}_mean"], profiles[f"{right.lower()}_mean"])
+            trend = spearmanr(slope_matrix[left], slope_matrix[right])
+            correlations.append(
+                {
+                    "outcome_1": left,
+                    "outcome_2": right,
+                    "long_term_spearman_rho": float(level.statistic),
+                    "long_term_two_sided_p": float(level.pvalue),
+                    "slope_spearman_rho": float(trend.statistic),
+                    "slope_two_sided_p": float(trend.pvalue),
+                }
+            )
     for label in OUTCOMES:
         subset = trends[trends["outcome"] == label]
         lower, upper = bootstrap_median_interval(subset["linear_slope"])
@@ -128,10 +162,7 @@ def observed_summary(panel, trends, profiles):
     metadata = {
         "countries_or_territories": int(panel[ENTITY].nunique()),
         "years": [int(panel[TIME].min()), int(panel[TIME].max())],
-        "spearman_long_term_level_correlation": float(level_correlation.statistic),
-        "spearman_long_term_level_p": float(level_correlation.pvalue),
-        "spearman_slope_correlation": float(slope_correlation.statistic),
-        "spearman_slope_p": float(slope_correlation.pvalue),
+        "pairwise_correlations": correlations,
     }
     return pd.DataFrame(records), metadata
 
@@ -170,4 +201,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

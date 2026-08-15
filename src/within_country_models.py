@@ -2,6 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import statsmodels.formula.api as smf
 
@@ -20,60 +21,69 @@ def prepare_stacked_panel(panel, lag):
         frame = working[[ENTITY, "country_name", TIME, *[f"z_{item}" for item in PREDICTORS]]].copy()
         frame["outcome"] = label
         frame["anxiety_outcome"] = int(label == "Anxiety")
+        frame["depression_outcome"] = int(label == "Depression")
         frame["value"] = working[f"z_{outcome}"].to_numpy()
         frame["outcome_country"] = label + ":" + frame[ENTITY].astype(str)
         frame["outcome_year"] = label + ":" + frame[TIME].astype(str)
         frames.append(frame)
-    return pd.concat(frames, ignore_index=True)
+    stacked = pd.concat(frames, ignore_index=True)
+    stacked["outcome"] = pd.Categorical(stacked["outcome"], categories=list(OUTCOMES), ordered=True)
+    return stacked
+
+
+def linear_estimate(fitted, terms):
+    vector = np.zeros(len(fitted.params), dtype=float)
+    for term, weight in terms.items():
+        vector[fitted.params.index.get_loc(term)] = weight
+    test = fitted.t_test(vector)
+    interval = np.asarray(test.conf_int()).reshape(-1)
+    return {
+        "estimate": float(np.asarray(test.effect).reshape(-1)[0]),
+        "ci_low": float(interval[0]),
+        "ci_high": float(interval[1]),
+        "p_value": float(np.asarray(test.pvalue).reshape(-1)[0]),
+    }
 
 
 def fit_model(panel, lag):
     stacked = prepare_stacked_panel(panel, lag)
     main_terms = [f"z_{item}" for item in PREDICTORS]
-    interaction_terms = [f"anxiety_outcome:z_{item}" for item in PREDICTORS]
-    formula = "value ~ anxiety_outcome + " + " + ".join(main_terms + interaction_terms) + " + C(outcome_country) + C(outcome_year)"
+    interaction_terms = [f"{indicator}:z_{item}" for indicator in ["anxiety_outcome", "depression_outcome"] for item in PREDICTORS]
+    formula = "value ~ " + " + ".join(main_terms + interaction_terms) + " + C(outcome_country) + C(outcome_year)"
     fitted = smf.ols(formula, data=stacked).fit(cov_type="cluster", cov_kwds={"groups": stacked[ENTITY]})
     records = []
     for predictor in PREDICTORS:
         main = f"z_{predictor}"
-        interaction = f"anxiety_outcome:z_{predictor}"
-        anxiety_test = fitted.t_test(f"{main} + {interaction} = 0")
-        records.extend(
-            [
+        outcome_terms = {
+            "Suicide": {main: 1.0},
+            "Anxiety": {main: 1.0, f"anxiety_outcome:z_{predictor}": 1.0},
+            "Depression": {main: 1.0, f"depression_outcome:z_{predictor}": 1.0},
+        }
+        for label, terms in outcome_terms.items():
+            records.append(
                 {
                     "lag_years": lag,
                     "dimension": predictor,
                     "dimension_label": PREDICTOR_LABELS[predictor],
-                    "estimate_type": "Suicide association",
-                    "estimate": float(fitted.params[main]),
-                    "ci_low": float(fitted.conf_int().loc[main, 0]),
-                    "ci_high": float(fitted.conf_int().loc[main, 1]),
-                    "p_value": float(fitted.pvalues[main]),
-                },
+                    "estimate_type": f"{label} association",
+                    **linear_estimate(fitted, terms),
+                }
+            )
+        for left, right in [("Anxiety", "Suicide"), ("Depression", "Suicide"), ("Depression", "Anxiety")]:
+            terms = outcome_terms[left].copy()
+            for term, weight in outcome_terms[right].items():
+                terms[term] = terms.get(term, 0.0) - weight
+            records.append(
                 {
                     "lag_years": lag,
                     "dimension": predictor,
                     "dimension_label": PREDICTOR_LABELS[predictor],
-                    "estimate_type": "Anxiety association",
-                    "estimate": float(anxiety_test.effect.item()),
-                    "ci_low": float(anxiety_test.conf_int()[0, 0]),
-                    "ci_high": float(anxiety_test.conf_int()[0, 1]),
-                    "p_value": float(anxiety_test.pvalue.item()),
-                },
-                {
-                    "lag_years": lag,
-                    "dimension": predictor,
-                    "dimension_label": PREDICTOR_LABELS[predictor],
-                    "estimate_type": "Anxiety minus suicide contrast",
-                    "estimate": float(fitted.params[interaction]),
-                    "ci_low": float(fitted.conf_int().loc[interaction, 0]),
-                    "ci_high": float(fitted.conf_int().loc[interaction, 1]),
-                    "p_value": float(fitted.pvalues[interaction]),
-                },
-            ]
-        )
+                    "estimate_type": f"{left} minus {right.lower()} contrast",
+                    **linear_estimate(fitted, terms),
+                }
+            )
     result = pd.DataFrame(records)
-    contrast = result["estimate_type"] == "Anxiety minus suicide contrast"
+    contrast = result["estimate_type"].str.endswith("contrast")
     result["fdr_q_value"] = pd.NA
     result.loc[contrast, "fdr_q_value"] = bh_adjust(result.loc[contrast, "p_value"])
     metadata = {
@@ -84,7 +94,7 @@ def fit_model(panel, lag):
         "adjusted_r_squared": float(fitted.rsquared_adj),
         "fixed_effects": "Outcome-specific country and year fixed effects",
         "covariance": "Country-clustered",
-        "multiple_testing": "Benjamini-Hochberg across ten outcome contrasts",
+        "multiple_testing": "Benjamini-Hochberg across thirty pairwise outcome contrasts",
     }
     return result, metadata
 
@@ -115,4 +125,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

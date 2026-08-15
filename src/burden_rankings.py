@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import linregress
 
-from common import ENTITY, OUTCOMES, TIME, ensure_output_dir, load_panel, zscore
+from common import ENTITY, NONFATAL_OUTCOMES, OUTCOMES, TIME, ensure_output_dir, load_panel, zscore
 
 
 def annualized_log_change(values, years):
@@ -15,6 +15,14 @@ def annualized_log_change(values, years):
     if valid.sum() < 3:
         return np.nan
     return float(linregress(years[valid], np.log(values[valid])).slope)
+
+
+def robust_minmax(values, lower=5, upper=95):
+    series = pd.to_numeric(pd.Series(values, copy=False), errors="coerce")
+    low, high = np.nanpercentile(series, [lower, upper])
+    if not np.isfinite(high - low) or high == low:
+        return pd.Series(np.zeros(len(series)), index=series.index)
+    return ((series - low) / (high - low)).clip(0, 1)
 
 
 def calculate_rankings(panel):
@@ -30,35 +38,56 @@ def calculate_rankings(panel):
             key = label.lower()
             record[f"{key}_mean"] = float(group[column].mean())
             record[f"{key}_annualized_log_change"] = annualized_log_change(group[column], group[TIME])
+            record[f"{key}_relative_change_percent"] = float((group[column].iloc[-1] / group[column].iloc[0] - 1) * 100)
         records.append(record)
     ranking = pd.DataFrame(records)
-    ranking["suicide_level_z"] = zscore(ranking["suicide_mean"])
-    ranking["anxiety_level_z"] = zscore(ranking["anxiety_mean"])
-    ranking["long_term_joint_burden"] = (ranking["suicide_level_z"] + ranking["anxiety_level_z"]) / 2
-    ranking["suicide_change_z"] = zscore(ranking["suicide_annualized_log_change"])
-    ranking["anxiety_change_z"] = zscore(ranking["anxiety_annualized_log_change"])
-    ranking["joint_increase_score"] = (ranking["suicide_change_z"] + ranking["anxiety_change_z"]) / 2
+    labels = [label.lower() for label in OUTCOMES]
+    for label in labels:
+        ranking[f"{label}_level_z"] = zscore(ranking[f"{label}_mean"])
+        ranking[f"{label}_long_term_component"] = robust_minmax(ranking[f"{label}_mean"])
+        ranking[f"{label}_change_z"] = zscore(ranking[f"{label}_annualized_log_change"])
+    ranking["long_term_joint_burden"] = ranking[[f"{label}_level_z" for label in labels]].mean(axis=1)
+    component_columns = [f"{label}_long_term_component" for label in labels]
+    component_total = ranking[component_columns].sum(axis=1).replace(0, np.nan)
+    for label in labels:
+        ranking[f"{label}_long_term_share"] = (
+            ranking[f"{label}_long_term_component"] / component_total
+        ).fillna(1 / len(labels))
+    ranking["joint_increase_score"] = ranking[[f"{label}_change_z" for label in labels]].mean(axis=1)
     ranking["burden_ranking_score"] = 0.60 * ranking["long_term_joint_burden"] + 0.40 * ranking["joint_increase_score"]
-    ranking["composite_rank"] = ranking["burden_ranking_score"].rank(ascending=False, method="min").astype(int)
-    ranking["long_term_rank"] = ranking["long_term_joint_burden"].rank(ascending=False, method="min").astype(int)
+    ranking["composite_rank"] = ranking["burden_ranking_score"].rank(ascending=False, method="first").astype(int)
+    ranking["long_term_rank"] = ranking["long_term_joint_burden"].rank(ascending=False, method="first").astype(int)
+    ranking["nonfatal_long_term_score"] = ranking[
+        [f"{label.lower()}_level_z" for label in NONFATAL_OUTCOMES]
+    ].mean(axis=1)
+    ranking["nonfatal_annualized_log_change"] = ranking[
+        [f"{label.lower()}_annualized_log_change" for label in NONFATAL_OUTCOMES]
+    ].mean(axis=1)
+    ranking["nonfatal_relative_change_percent"] = ranking[
+        [f"{label.lower()}_relative_change_percent" for label in NONFATAL_OUTCOMES]
+    ].mean(axis=1)
+    fatal_cut = ranking["suicide_level_z"].median()
+    nonfatal_cut = ranking["nonfatal_long_term_score"].median()
     ranking["level_profile"] = np.select(
         [
-            (ranking["suicide_level_z"] >= 0) & (ranking["anxiety_level_z"] >= 0),
-            (ranking["suicide_level_z"] >= 0) & (ranking["anxiety_level_z"] < 0),
-            (ranking["suicide_level_z"] < 0) & (ranking["anxiety_level_z"] >= 0),
+            (ranking["suicide_level_z"] < fatal_cut) & (ranking["nonfatal_long_term_score"] < nonfatal_cut),
+            (ranking["suicide_level_z"] >= fatal_cut) & (ranking["nonfatal_long_term_score"] < nonfatal_cut),
+            (ranking["suicide_level_z"] < fatal_cut) & (ranking["nonfatal_long_term_score"] >= nonfatal_cut),
         ],
-        ["High suicide and high anxiety", "High suicide only", "High anxiety only"],
-        default="Low suicide and low anxiety",
+        ["Low fatal and low non-fatal", "High fatal and low non-fatal", "Low fatal and high non-fatal"],
+        default="High fatal and high non-fatal",
     )
     ranking["change_profile"] = np.select(
         [
-            (ranking["suicide_annualized_log_change"] >= 0) & (ranking["anxiety_annualized_log_change"] >= 0),
-            (ranking["suicide_annualized_log_change"] >= 0) & (ranking["anxiety_annualized_log_change"] < 0),
-            (ranking["suicide_annualized_log_change"] < 0) & (ranking["anxiety_annualized_log_change"] >= 0),
+            (ranking["suicide_relative_change_percent"] < 0) & (ranking["nonfatal_relative_change_percent"] > 0),
+            (ranking["suicide_relative_change_percent"] > 0) & (ranking["nonfatal_relative_change_percent"] > 0),
+            (ranking["suicide_relative_change_percent"] < 0) & (ranking["nonfatal_relative_change_percent"] < 0),
         ],
-        ["Both increasing", "Suicide increasing and anxiety decreasing", "Suicide decreasing and anxiety increasing"],
-        default="Both decreasing",
+        ["Fatal down and non-fatal up", "Both increasing", "Both decreasing"],
+        default="Fatal up and non-fatal down",
     )
+    for label in labels:
+        ranking[f"{label}_rank"] = ranking[f"{label}_mean"].rank(ascending=False, method="min").astype(int)
     return ranking.sort_values("composite_rank").reset_index(drop=True)
 
 

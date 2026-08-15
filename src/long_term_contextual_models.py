@@ -2,6 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import statsmodels.formula.api as smf
 
@@ -21,56 +22,62 @@ def stack_outcomes(country):
     for label, outcome in OUTCOMES.items():
         frame = country[[ENTITY, "country_name", "continent", *[f"z_{item}" for item in PREDICTORS]]].copy()
         frame["outcome"] = label
-        frame["anxiety_outcome"] = int(label == "Anxiety")
         frame["value"] = country[f"z_{outcome}"].to_numpy()
         records.append(frame)
-    return pd.concat(records, ignore_index=True)
+    stacked = pd.concat(records, ignore_index=True)
+    stacked["outcome"] = pd.Categorical(stacked["outcome"], categories=list(OUTCOMES), ordered=True)
+    return stacked
+
+
+def linear_estimate(fitted, terms):
+    vector = np.zeros(len(fitted.params), dtype=float)
+    for term, weight in terms.items():
+        vector[fitted.params.index.get_loc(term)] = weight
+    test = fitted.t_test(vector)
+    interval = np.asarray(test.conf_int()).reshape(-1)
+    return {
+        "estimate": float(np.asarray(test.effect).reshape(-1)[0]),
+        "ci_low": float(interval[0]),
+        "ci_high": float(interval[1]),
+        "p_value": float(np.asarray(test.pvalue).reshape(-1)[0]),
+    }
 
 
 def fit_model(country):
     stacked = stack_outcomes(country)
     main_terms = [f"z_{item}" for item in PREDICTORS]
-    interaction_terms = [f"anxiety_outcome:z_{item}" for item in PREDICTORS]
-    formula = "value ~ anxiety_outcome + " + " + ".join(main_terms + interaction_terms)
+    interaction_terms = [f"C(outcome):z_{item}" for item in PREDICTORS]
+    formula = "value ~ C(outcome) + " + " + ".join(main_terms + interaction_terms)
     fitted = smf.ols(formula, data=stacked).fit(cov_type="cluster", cov_kwds={"groups": stacked[ENTITY]})
     records = []
     for predictor in PREDICTORS:
         main = f"z_{predictor}"
-        interaction = f"anxiety_outcome:z_{predictor}"
-        anxiety_test = fitted.t_test(f"{main} + {interaction} = 0")
-        records.extend(
-            [
+        outcome_terms = {"Suicide": {main: 1.0}}
+        for label in list(OUTCOMES)[1:]:
+            outcome_terms[label] = {main: 1.0, f"C(outcome)[T.{label}]:z_{predictor}": 1.0}
+        for label, terms in outcome_terms.items():
+            records.append(
                 {
                     "dimension": predictor,
                     "dimension_label": PREDICTOR_LABELS[predictor],
-                    "estimate_type": "Suicide association",
-                    "estimate": float(fitted.params[main]),
-                    "ci_low": float(fitted.conf_int().loc[main, 0]),
-                    "ci_high": float(fitted.conf_int().loc[main, 1]),
-                    "p_value": float(fitted.pvalues[main]),
-                },
+                    "estimate_type": f"{label} association",
+                    **linear_estimate(fitted, terms),
+                }
+            )
+        for left, right in [("Anxiety", "Suicide"), ("Depression", "Suicide"), ("Depression", "Anxiety")]:
+            terms = outcome_terms[left].copy()
+            for term, weight in outcome_terms[right].items():
+                terms[term] = terms.get(term, 0.0) - weight
+            records.append(
                 {
                     "dimension": predictor,
                     "dimension_label": PREDICTOR_LABELS[predictor],
-                    "estimate_type": "Anxiety association",
-                    "estimate": float(anxiety_test.effect.item()),
-                    "ci_low": float(anxiety_test.conf_int()[0, 0]),
-                    "ci_high": float(anxiety_test.conf_int()[0, 1]),
-                    "p_value": float(anxiety_test.pvalue.item()),
-                },
-                {
-                    "dimension": predictor,
-                    "dimension_label": PREDICTOR_LABELS[predictor],
-                    "estimate_type": "Anxiety minus suicide contrast",
-                    "estimate": float(fitted.params[interaction]),
-                    "ci_low": float(fitted.conf_int().loc[interaction, 0]),
-                    "ci_high": float(fitted.conf_int().loc[interaction, 1]),
-                    "p_value": float(fitted.pvalues[interaction]),
-                },
-            ]
-        )
+                    "estimate_type": f"{left} minus {right.lower()} contrast",
+                    **linear_estimate(fitted, terms),
+                }
+            )
     result = pd.DataFrame(records)
-    contrast = result["estimate_type"] == "Anxiety minus suicide contrast"
+    contrast = result["estimate_type"].str.endswith("contrast")
     result["fdr_q_value"] = pd.NA
     result.loc[contrast, "fdr_q_value"] = bh_adjust(result.loc[contrast, "p_value"])
     return fitted, stacked, result
@@ -88,7 +95,7 @@ def run(input_path=None, output_dir=None):
         "r_squared": float(fitted.rsquared),
         "adjusted_r_squared": float(fitted.rsquared_adj),
         "covariance": "Country-clustered",
-        "multiple_testing": "Benjamini-Hochberg across ten outcome contrasts",
+        "multiple_testing": "Benjamini-Hochberg across thirty pairwise outcome contrasts",
     }
     (destination / "long_term_model_summary.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return coefficients
@@ -105,4 +112,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

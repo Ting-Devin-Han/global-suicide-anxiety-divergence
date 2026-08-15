@@ -10,7 +10,9 @@ from common import ENTITY, OUTCOMES, PREDICTORS, PREDICTOR_LABELS, TIME, bh_adju
 
 def fit_country_models(panel):
     working = panel.copy()
-    working["joint_burden"] = (zscore(working[OUTCOMES["Suicide"]]) + zscore(working[OUTCOMES["Anxiety"]])) / 2
+    working["joint_burden"] = pd.concat(
+        [zscore(working[column]).rename(label) for label, column in OUTCOMES.items()], axis=1
+    ).mean(axis=1)
     records = []
     for code, group in working.groupby(ENTITY, sort=True):
         group = group.sort_values(TIME)
@@ -65,4 +67,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

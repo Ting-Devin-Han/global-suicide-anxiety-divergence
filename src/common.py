@@ -7,10 +7,15 @@ from statsmodels.stats.multitest import multipletests
 
 ENTITY = "country_code"
 TIME = "year"
+EXPECTED_COUNTRIES = 200
+EXPECTED_YEARS = tuple(range(2000, 2020))
 OUTCOMES = {
     "Suicide": "suicide_rate",
     "Anxiety": "anxiety_disorder_prevalence",
+    "Depression": "depression_as_prevalence",
 }
+FATAL_OUTCOME = "Suicide"
+NONFATAL_OUTCOMES = ("Anxiety", "Depression")
 PREDICTORS = [
     "economic_development",
     "social_inequality_index",
@@ -29,11 +34,11 @@ PREDICTOR_LABELS = {
     "education_human_capital_index": "Education and human capital",
     "life_expectancy": "Life expectancy",
     "population_growth": "Population growth",
-    "urban_activity": "Urban activity",
-    "resource_heat_pressure_index": "Resource and heat pressure",
-    "ecological_natural_exposure_index": "Ecological and natural exposure",
-    "built_environment_index": "Built environment",
-    "policy_social_context_index": "Policy and social context",
+    "urban_activity": "Activity",
+    "resource_heat_pressure_index": "Pollution",
+    "ecological_natural_exposure_index": "Ecological exposure",
+    "built_environment_index": "Built-up surface",
+    "policy_social_context_index": "Policy-social context",
 }
 
 
@@ -42,7 +47,7 @@ def repository_root():
 
 
 def default_input_path():
-    return repository_root() / "data" / "input" / "main_country_year_panel_231_2000_2019_FINAL.csv"
+    return repository_root() / "data" / "input" / "main_country_year_panel_200_2000_2019_FINAL.csv"
 
 
 def default_output_dir():
@@ -93,5 +98,10 @@ def load_panel(path=None):
     if panel[required].isna().any().any():
         missing = panel[required].isna().sum()
         raise ValueError(f"Missing values were found: {missing[missing > 0].to_dict()}")
+    years = tuple(sorted(panel[TIME].unique()))
+    counts = panel.groupby(ENTITY)[TIME].nunique()
+    if panel[ENTITY].nunique() != EXPECTED_COUNTRIES or years != EXPECTED_YEARS:
+        raise ValueError("The fixed analysis requires 200 countries or territories observed from 2000 through 2019")
+    if counts.nunique() != 1 or counts.iloc[0] != len(EXPECTED_YEARS):
+        raise ValueError("The fixed analysis panel must contain 20 annual observations for every country or territory")
     return panel
-

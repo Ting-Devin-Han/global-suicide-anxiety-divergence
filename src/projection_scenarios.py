@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from common import ENTITY, OUTCOMES, TIME, ensure_output_dir, load_panel
+from common import ENTITY, NONFATAL_OUTCOMES, OUTCOMES, TIME, ensure_output_dir, load_panel
 
 
 SCENARIOS = {
@@ -17,11 +17,12 @@ SCENARIOS = {
 
 def divergence_calibration(panel):
     working = panel.sort_values([ENTITY, TIME]).copy()
-    working["log_suicide"] = np.log(np.clip(working[OUTCOMES["Suicide"]].to_numpy(dtype=float), 1e-8, None))
-    working["log_anxiety"] = np.log(np.clip(working[OUTCOMES["Anxiety"]].to_numpy(dtype=float), 1e-8, None))
-    suicide_change = working.groupby(ENTITY)["log_suicide"].diff()
-    anxiety_change = working.groupby(ENTITY)["log_anxiety"].diff()
-    intensity = (anxiety_change - suicide_change).abs().dropna()
+    for label, column in OUTCOMES.items():
+        key = label.lower()
+        working[f"log_{key}"] = np.log(np.clip(working[column].to_numpy(dtype=float), 1e-8, None))
+        working[f"change_{key}"] = working.groupby(ENTITY)[f"log_{key}"].diff()
+    nonfatal_change = working[[f"change_{label.lower()}" for label in NONFATAL_OUTCOMES]].mean(axis=1)
+    intensity = (nonfatal_change - working["change_suicide"]).abs().dropna()
     quantiles = intensity.quantile([0.25, 0.50, 0.75])
     calibration = pd.DataFrame(
         {
@@ -93,14 +94,15 @@ def summarize_scenarios(projections):
         countries_or_territories_decreasing=("relative_change_percent", lambda values: int((values < 0).sum())),
     )
     profiles = endpoint.pivot_table(index=[ENTITY, "country_name", "continent", "scenario"], columns="outcome", values="relative_change_percent").reset_index()
+    profiles["nonfatal_change_percent"] = profiles[list(NONFATAL_OUTCOMES)].mean(axis=1)
     profiles["projected_profile"] = np.select(
         [
-            (profiles["Suicide"] >= 0) & (profiles["Anxiety"] >= 0),
-            (profiles["Suicide"] >= 0) & (profiles["Anxiety"] < 0),
-            (profiles["Suicide"] < 0) & (profiles["Anxiety"] >= 0),
+            (profiles["Suicide"] < 0) & (profiles["nonfatal_change_percent"] > 0),
+            (profiles["Suicide"] > 0) & (profiles["nonfatal_change_percent"] > 0),
+            (profiles["Suicide"] < 0) & (profiles["nonfatal_change_percent"] < 0),
         ],
-        ["Both increasing", "Suicide increasing and anxiety decreasing", "Suicide decreasing and anxiety increasing"],
-        default="Both decreasing",
+        ["Fatal down and non-fatal up", "Both increasing", "Both decreasing"],
+        default="Fatal up and non-fatal down",
     )
     counts = profiles.groupby(["scenario", "projected_profile"], as_index=False).size().rename(columns={"size": "countries_or_territories"})
     return summary, profiles, counts
