@@ -1,7 +1,5 @@
 # Anxiety and Depression Burdens Rise Despite Declining Suicide Rates Worldwide
 
-Core reproducibility code for the cross-national study of divergent suicide mortality, anxiety-disorder prevalence, and depressive-disorder prevalence, 2000–2030.
-
 ### Scope
 
 This repository contains the core data-processing and statistical-analysis code used in the manuscript. Figure rendering, manuscript typesetting, and publication table-layout code are intentionally excluded.
