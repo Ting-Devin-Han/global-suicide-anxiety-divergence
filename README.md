@@ -8,7 +8,7 @@ The repository reproduces:
 
 - validation of the 200 × 20 country-year panel;
 - country-specific observed trends and bootstrap intervals;
-- long-term outcome profiles, pairwise rank concordance, and Bayesian evidence for absent associations;
+- long-term outcome profiles, pairwise rank concordance, and Bayesian evidence;
 - the composite burden ranking based on 60% long-term joint burden and 40% joint increase;
 - paired cross-country contextual models for all three outcomes;
 - contemporaneous and one-year-lagged two-way fixed-effects models;
