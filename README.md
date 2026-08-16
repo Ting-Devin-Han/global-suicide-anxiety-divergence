@@ -2,7 +2,7 @@
 
 ### Scope
 
-This repository contains the core data-processing and statistical-analysis code used in the manuscript. Figure rendering, manuscript typesetting, and publication table-layout code are intentionally excluded.
+This repository contains the core data-processing and statistical-analysis code used in the manuscript. 
 
 The repository reproduces:
 
